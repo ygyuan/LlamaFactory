@@ -181,6 +181,7 @@ wandb/
 swanlog/
 generated_predictions.jsonl
 predictions_score.json
+project/
 saves/
 data/
 data_keywords/
