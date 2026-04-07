@@ -117,10 +117,12 @@ def main(
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, pad_token='<|endoftext|>')
     data_loader = create_data_loader(questions, tokenizer)
 
-    choices = ['否', '是']
+    # choices = ['否', '是']
+    choices = ['安全', '红一', '政治', '社会', '色情', '违法']
     token_idx = [tokenizer.encode(label, add_special_tokens=False)[0] for label in choices]
     assert(len(choices) == len(set(token_idx)))
     print(choices, token_idx)
+    # quit()
 
     indx=0
     for inputs, line in tqdm(zip(data_loader, questions), total=len(questions)):

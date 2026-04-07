@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 # Constants
 LABEL_MAP = {
     '100': 0,
-    '安全': 0,
 }
 
 @dataclass
@@ -49,7 +48,7 @@ class VQAEvaluator:
         logger.info(f"Reading input file: {src}")
         
         try:
-            # Read prediction results (jsonl format)
+            # Read prediction results
             with open(src, 'r') as f:
                 results = []
                 for line in f:
@@ -58,28 +57,13 @@ class VQAEvaluator:
                     except json.JSONDecodeError:
                         continue
                 
-            # Read test data - handle both single JSON object and multiple JSON objects
+            # Read test data
             with open(self.args.split, 'r') as f:
-                content = f.read().strip()
+                self.test_split = [json.loads(line) for line in f]
                 
-                # Try to parse as single JSON object first
-                try:
-                    self.test_split = json.loads(content)
-                except json.JSONDecodeError:
-                    # If that fails, try parsing as multiple JSON objects (jsonl format)
-                    self.test_split = []
-                    for line in content.split('\n'):
-                        line = line.strip()
-                        if line:
-                            try:
-                                self.test_split.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                logger.warning(f"Skipping invalid JSON line: {line[:100]}...")
-                                continue
-            
             # Convert results format
             self.results = {x['question_id']: x['score'] for x in results}
-            self.datalist = {data.get("id", data.get("sample_id", "")): data for data in self.test_split}
+            self.datalist = {data['id']: data for data in self.test_split}
             
             logger.info(f'Total results: {len(self.results)}, Total split: {len(self.test_split)}')
                     
@@ -95,15 +79,14 @@ class VQAEvaluator:
         y_multi_true = []
 
         for x in self.test_split:
-            idx = x.get("id", x.get("sample_id", None))
-            if idx not in self.results:
+            if x['id'] not in self.results:
                 continue
                 
-            score = self.results[idx]
+            score = self.results[x['id']]
             label = str(x['label'])            
             mlab = LABEL_MAP.get(label, 1)
             
-            y_id.append(idx)
+            y_id.append(x['id'])
             y_audit_label.append(label)
             multi_y_scores.append(score)
             y_multi_true.append(mlab)
@@ -147,7 +130,7 @@ class VQAEvaluator:
         try:
             self.read_data()
             y_id, y_audit_label, multi_y_scores, y_multi_true = self.process_data()
-            self.evaluate_black_samples(y_id, y_audit_label, multi_y_scores, y_multi_true)
+            self.evaluate_white_samples(y_id, y_audit_label, multi_y_scores, y_multi_true)
             
         except Exception as e:
             logger.error(f"Evaluation failed: {str(e)}", exc_info=True)
@@ -170,16 +153,16 @@ class VQAEvaluator:
         return best_threshold, best_precision, best_recall, best_f1
 
     @staticmethod
-    def _output_metrics_at_precision_intervals(precision: np.ndarray, recall: np.ndarray, thresholds: np.ndarray, label: int, total_positive: int, total_samples: int) -> None:
+    def _output_metrics_at_precision_intervals(precision: np.ndarray, recall: np.ndarray, thresholds: np.ndarray, label: int) -> None:
         """Output metrics at regular precision intervals of 0.05."""
         eps = 1e-12
         f1_scores = 2 * (precision * recall) / (precision + recall + eps)
         
         # Create precision intervals
-        target_precisions = np.array([0.250, 0.500, 0.750, 0.900, 0.950, 0.980, 0.990, 0.995, 0.999])
+        target_precisions = np.array([0.500, 0.750, 0.900, 0.950, 0.990, 0.995, 0.999, 1.000])
         
         logger.info(f"\nMetrics at precision intervals for Label_{label}:")
-        logger.info("Precision\tRecall\tF1\tThreshold\tNegativePrecisionImprovement\tNegativeRecallReduction")
+        logger.info("Precision\tRecall\tF1\tThreshold")
         logger.info("-" * 50)
         
         # Find valid indices where precision is achievable
@@ -188,30 +171,22 @@ class VQAEvaluator:
             idx = np.abs(precision - target_precision).argmin()
             if idx < len(precision) and idx < len(recall) and idx < len(f1_scores) and idx < len(thresholds):
                 valid_indices.append((target_precision, idx))
-
-        total_negative = total_samples - total_positive
-        ori_negative_precision = total_negative / (total_negative + total_positive)
-        logger.info(f"Total_positive: {total_positive}, Total_negative: {total_negative}, Original Negative Precision: {ori_negative_precision:.4f}")
+        
         # Output metrics for valid indices
         for target_precision, idx in valid_indices:
-            TP = int(recall[idx] * total_positive)
-            FP = int((TP / (precision[idx] + eps)) - TP)
-            # logger.info(f"TP: {TP}, FP: {FP}, TN: {total_negative-FP}, FN: {total_positive-TP}")
-            NegativePrecisionImprovement = (total_negative-FP) / (total_samples-FP-TP) # - ori_negative_precision
-            NegativeRecallReduction = FP/(total_negative + eps)
-            logger.info(f"{precision[idx]:.4f}\t{recall[idx]:.4f}\t{f1_scores[idx]:.4f}\t{thresholds[idx]:.4f}\t{NegativePrecisionImprovement:.4f}\t{NegativeRecallReduction:.4f}")
+            logger.info(f"{precision[idx]:.4f}\t{recall[idx]:.4f}\t{f1_scores[idx]:.4f}\t{thresholds[idx]:.4f}")
 
-    def evaluate_black_samples(self, y_id: List[str], y_audit_label: List[str], 
+    def evaluate_white_samples(self, y_id: List[str], y_audit_label: List[str], 
                              multi_y_scores: List[List[float]], y_multi_true: List[int]) -> None:
-        """Evaluate black sample performance and overall reduction effect."""
-        label = 1  # Focus on label 1 (black samples)
+        """Evaluate white sample performance and overall reduction effect."""
+        label = 0  # Focus on label 0 (white samples)
         y_true_idx = [int(j == label) for j in y_multi_true]
-        y_scores_idx = [j[label] for j in multi_y_scores]  # Extract scores for label 1
+        y_scores_idx = [j[label] for j in multi_y_scores]  # Extract scores for label 0
         
         precision, recall, thresholds = precision_recall_curve(y_true_idx, y_scores_idx, drop_intermediate=True)
         
         # Output metrics at regular precision intervals
-        self._output_metrics_at_precision_intervals(precision, recall, thresholds, label, sum(y_true_idx), len(y_scores_idx))
+        self._output_metrics_at_precision_intervals(precision, recall, thresholds, label)
         
         self._find_best_f1_threshold(precision, recall, thresholds, label)
         
@@ -260,16 +235,16 @@ class VQAEvaluator:
                 pred_label = 1 if score >= threshold else 0
                 
                 # Parse comment and background info
-                # celue = data.get("strHitkeywords", "")
-                # url = data.get("strHitEvents", "")
-                # comment = data.get("text", "")
                 celue = data.get("celue", "")
-                url = data.get("event", "")
-                comment = data.get("instruction", "").replace("\n", "\\n")
+                comment = data["input"].split("\n")[-1].split("内容:")[1] if "内容:" in data["input"].split("\n")[-1] else ""
                 background = ""
+                url = ""
+                if data.get("image") and len(data["image"]) > 0:
+                    url = os.path.join("http://9.223.241.48/apdcephfs_qy3/share_301069248/data/video/pindaopinlun3/dapan", data["image"][0])
+                
                 f.write(f"{id}\t{score:.6f}\t{true_label}\t{pred_label}\t{celue}\t{url}\t{audit_label}\t{comment}\t{background}\n")
         
-        logger.info(f"\nblack sample evaluation results written to {output_file}")
+        logger.info(f"\nWhite sample evaluation results written to {output_file}")
 
     @staticmethod
     def _find_threshold_for_precision(precision: np.ndarray, thresholds: np.ndarray, target_precision: float) -> float:
@@ -292,7 +267,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Evaluate model predictions for VQA task')
     parser.add_argument('--mejson', type=str, required=True, help='Input JSON file path')
     parser.add_argument('--split', type=str, required=True, help='Test split file path')
-    parser.add_argument('--precision', type=float, default=0.990, help='Precision threshold')
+    parser.add_argument('--precision', type=float, default=0.995, help='Precision threshold')
     parser.add_argument('--recall', type=float, default=None, help='Recall threshold')
     parser.add_argument('--threshold', type=float, default=None, help='Direct threshold value (overrides precision/recall-based calculation)')
     return parser.parse_args()

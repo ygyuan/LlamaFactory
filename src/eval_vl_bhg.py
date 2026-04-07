@@ -5,7 +5,7 @@ import json
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import numpy as np
@@ -37,8 +37,6 @@ class CustomDataset(Dataset):
         data = self.questions[index]
         if "instruction" in data and "input" in data:
             prompt = "\n".join([data["instruction"], data["input"]])
-        elif "input" in data:
-            prompt = data["input"]
         elif "messages" in data:
             prompt = data['messages'][0]['content'].replace("<image>", "")
         else:
@@ -49,7 +47,6 @@ class CustomDataset(Dataset):
             {"role": "user", "content": prompt}
         ] 
         text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-        # print("messages: ", messages, "\ntext: ", text)
         input_ids = self.tokenizer([text], return_tensors="pt")
         data_dict = dict(input_ids=input_ids)
         return data_dict
@@ -85,26 +82,22 @@ def main(
 ):
     
     questions = []
-    # 读取json格式的文件
-    with open(dev_path, "r", encoding='utf-8') as f:
-        if dev_path.endswith("json"):
-            questions = json.load(f)
-        elif dev_path.endswith("jsonl"):
+    try:
+        questions = json.load(open(dev_path, "r"))
+    except Exception as e:
+        with open(dev_path, "r") as f:
             lines = f.readlines()
             for line in lines:
                 questions.append(json.loads(line.strip()))
-        else:
-            print("invalid data")
-            quit()
     print("data_size: %d" % len(questions))
     questions = get_chunk(questions, num_chunks, chunk_idx)
     answers_file = os.path.expanduser(answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
-    ans_file = open(answers_file, "w", encoding='utf-8')
+    ans_file = open(answers_file, "w")
 
     # We recommend enabling flash_attention_2 for better acceleration and memory saving, especially in multi-image and video scenarios.
     print("model name:", model_name)
-    model = AutoModelForCausalLM.from_pretrained(
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_name,
         torch_dtype="auto",
         device_map="auto"
@@ -117,7 +110,7 @@ def main(
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, pad_token='<|endoftext|>')
     data_loader = create_data_loader(questions, tokenizer)
 
-    choices = ['否', '是']
+    choices = ['正常', '灰产', '其他']
     token_idx = [tokenizer.encode(label, add_special_tokens=False)[0] for label in choices]
     assert(len(choices) == len(set(token_idx)))
     print(choices, token_idx)
@@ -125,16 +118,13 @@ def main(
     indx=0
     for inputs, line in tqdm(zip(data_loader, questions), total=len(questions)):
         # pdb.set_trace()
-        idx = line.get("id", line.get("sample_id", None))
+        idx = line["id"]
         inputs = inputs[0].to(device='cuda', non_blocking=True)
         # Inference: Generation of the output
         # pdb.set_trace()
         outputs = model.generate(**inputs,
                                  min_length=0, num_beams=1, num_return_sequences=1,
                                  max_new_tokens=max_new_tokens,
-                                 # 重复惩罚核心参数（关键）
-                                 repetition_penalty=1.2,        # 重复惩罚因子，1.2是常用合理值
-                                 no_repeat_ngram_size=2,        # 禁止重复2个连续字/词
                                  return_dict_in_generate=True,
                                  use_cache=False,
                                  do_sample=False,
@@ -142,7 +132,6 @@ def main(
         # pdb.set_trace()
         generated_ids=outputs.sequences
         logits = outputs.scores
-        # print("logprobs: ", torch.cat([logits[0][:, i] for i in token_idx]))
         probs = torch.softmax(torch.cat([logits[0][:, i] for i in token_idx], 0), dim=-1) 
 
         generated_ids_trimmed = [
@@ -202,7 +191,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_seq_len",
         type=int,
-        default=10240,
+        default=830,
         help="",
     )
     parser.add_argument(
@@ -213,7 +202,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_new_token",
         type=int,
-        default=1,
+        default=5,
         help="max tokens for generation",
     )
     args = parser.parse_args()

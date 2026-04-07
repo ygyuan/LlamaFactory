@@ -38,7 +38,15 @@ class CustomDataset(Dataset):
         if "instruction" in data and "input" in data:
             prompt = "\n".join([data["instruction"], data["input"]])
         elif "input" in data:
-            prompt = data["input"]
+            # prompt = data["input"]
+            data_list = data["input"].split(", '判定相关")
+            if len(data_list) != 2:
+                print(data_list)
+            data_list2 = data_list[1].split("]}")
+            if len(data_list2) != 2:
+                print(data_list2)
+            prompt = "".join([data_list[0], data_list2[1]])
+            
         elif "messages" in data:
             prompt = data['messages'][0]['content'].replace("<image>", "")
         else:
@@ -87,15 +95,7 @@ def main(
     questions = []
     # 读取json格式的文件
     with open(dev_path, "r", encoding='utf-8') as f:
-        if dev_path.endswith("json"):
-            questions = json.load(f)
-        elif dev_path.endswith("jsonl"):
-            lines = f.readlines()
-            for line in lines:
-                questions.append(json.loads(line.strip()))
-        else:
-            print("invalid data")
-            quit()
+        questions = json.load(f)
     print("data_size: %d" % len(questions))
     questions = get_chunk(questions, num_chunks, chunk_idx)
     answers_file = os.path.expanduser(answers_file)
@@ -125,16 +125,13 @@ def main(
     indx=0
     for inputs, line in tqdm(zip(data_loader, questions), total=len(questions)):
         # pdb.set_trace()
-        idx = line.get("id", line.get("sample_id", None))
+        idx = line["id"]
         inputs = inputs[0].to(device='cuda', non_blocking=True)
         # Inference: Generation of the output
         # pdb.set_trace()
         outputs = model.generate(**inputs,
                                  min_length=0, num_beams=1, num_return_sequences=1,
                                  max_new_tokens=max_new_tokens,
-                                 # 重复惩罚核心参数（关键）
-                                 repetition_penalty=1.2,        # 重复惩罚因子，1.2是常用合理值
-                                 no_repeat_ngram_size=2,        # 禁止重复2个连续字/词
                                  return_dict_in_generate=True,
                                  use_cache=False,
                                  do_sample=False,

@@ -1,0 +1,394 @@
+import os
+import argparse
+import json
+from typing import Dict, List, Tuple, Any, Optional
+from dataclasses import dataclass
+from sklearn.metrics import precision_recall_curve
+import torch
+import logging
+from pathlib import Path
+import numpy as np
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger(__name__)
+
+# Constants
+LABEL_MAP = {
+    '100': 0,
+    '20746': 1,
+    '20007': 2,
+    '20001': 3, '20429': 3, '20430': 3, '20431': 3, '20202': 3,
+    '20012': 4, '20002': 4,
+}
+
+@dataclass
+class EvaluationMetrics:
+    """Data class to store evaluation metrics."""
+    confusion_matrix: torch.Tensor
+    precision: float
+    recall: float
+    f1_score: float
+    accuracy: float
+    false_positive_rate: float
+    hit_rate: float
+
+class VQAEvaluator:
+    """Class to handle VQA evaluation."""
+    
+    def __init__(self, args: argparse.Namespace):
+        """Initialize evaluator with command line arguments."""
+        self.args = args
+        self.results: Dict[str, float] = {}
+        self.test_split: List[Dict] = []
+        self.datalist: Dict[str, Dict] = {}
+        self.metrics: Optional[EvaluationMetrics] = None
+        
+    def read_data(self) -> None:
+        """Read prediction results and test data."""
+        src = self.args.mejson if self.args.mejson else os.path.join(self.args.ckpt, 'merge.jsonl')
+        logger.info(f"Reading input file: {src}")
+        
+        try:
+            # Read prediction results
+            with open(src, 'r') as f:
+                results = []
+                error_lines = []
+                for line_idx, line in enumerate(f, 1):
+                    try:
+                        results.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        error_lines.append(f"Line {line_idx}: {str(e)}")
+                
+            # Read test data
+            with open(self.args.split, 'r') as f:
+                self.test_split = [json.loads(line) for line in f]
+                
+            # Convert results format
+            self.results = {x['question_id']: x['score'] for x in results}
+            self.datalist = {data['id']: data for data in self.test_split}
+            
+            logger.info(f'Total results: {len(self.results)}, Total split: {len(self.test_split)}')
+            if error_lines:
+                logger.warning("First 5 error lines:")
+                for err in error_lines[:5]:
+                    logger.warning(err)
+                    
+        except (IOError, json.JSONDecodeError) as e:
+            logger.error(f"Error reading data: {str(e)}")
+            raise
+
+    def process_data(self) -> Tuple[List[Dict], Dict, Dict, Dict, List[int], List[str], List[str], List[List[float]], List[int]]:
+        """Process test data and prepare evaluation metrics."""
+        all_answers = []
+        y_id = []
+        y_audit_label = []
+        multi_y_scores = []
+        y_multi_true = []
+        gt_label_dic = {}
+        gt_celue_dic = {}
+        gtb_celue_dic = {}
+        multi_num = {'pic': 0, 'text': 0}
+
+        for x in self.test_split:
+            if x['id'] not in self.results:
+                continue
+                
+            all_answers.append({
+                'question_id': x['id'],
+                'answer': ''
+            })
+
+            score = self.results[x['id']]
+            label = str(x['label'])
+            
+            pic = 1  # Assume 1 image per sample
+            multi_num['pic' if pic > 0 else 'text'] += 1
+
+            celue = x['celue']
+            celueid = celue
+
+            lab = 0 if label == "100" else 1
+            mlab = self._get_label_type(label, gt_label_dic)
+            
+            y_id.append(x['id'])
+            y_audit_label.append(label)
+            multi_y_scores.append(score)
+            y_multi_true.append(mlab)
+
+            if label != '100':
+                gt_celue_dic[celueid] = gt_celue_dic.get(celueid, 0) + 1
+            else:
+                gtb_celue_dic[celueid] = gtb_celue_dic.get(celueid, 0) + 1
+
+        logger.info(f"Image/Text distribution: {multi_num}")
+        return all_answers, gt_celue_dic, gtb_celue_dic, gt_label_dic, y_id, y_audit_label, multi_y_scores, y_multi_true
+
+    @staticmethod
+    def _get_label_type(label: str, label_dic: Dict[int, int]) -> int:
+        """Map audit label to type number and count label occurrences."""
+        tmp = LABEL_MAP.get(label, 5)
+        label_dic[tmp] = label_dic.get(tmp, 0) + 1
+        return tmp
+
+    def calculate_metrics(self, confusion: torch.Tensor) -> EvaluationMetrics:
+        """Calculate evaluation metrics from confusion matrix."""
+        eps = 1e-12
+        total = confusion.sum().item()
+        
+        precision = confusion[1, 1].item() / (confusion[1, :].sum().item() + eps)
+        recall = confusion[1, 1].item() / (confusion[:, 1].sum().item() + eps)
+        f1_score = 2 * precision * recall / (precision + recall + eps)
+        accuracy = confusion[1, 1].item() / (confusion[1, :].sum().item() + eps)
+        false_positive_rate = confusion[1, 0].item() / (confusion[:, 0].sum().item() + eps)
+        hit_rate = 1 - (confusion[0, :].sum().item() / (total + eps))
+        
+        return EvaluationMetrics(
+            confusion_matrix=confusion,
+            precision=precision,
+            recall=recall,
+            f1_score=f1_score,
+            accuracy=accuracy,
+            false_positive_rate=false_positive_rate,
+            hit_rate=hit_rate
+        )
+
+    def get_confusion_matrix(self, threshold: float, y_true: List[int], y_scores: List[float]) -> torch.Tensor:
+        """Calculate confusion matrix for given threshold."""
+        num_label = 2
+        confusion = torch.zeros(num_label, num_label, dtype=torch.long)
+        
+        for score, true_label in zip(y_scores, y_true):
+            pred_label = 1 if score >= threshold else 0
+            confusion[pred_label, true_label] += 1
+            
+        return confusion
+
+    def evaluate(self) -> None:
+        """Run the complete evaluation pipeline."""
+        try:
+            self.read_data()
+            all_answers, gt_celue_dic, gtb_celue_dic, gt_label_dic, y_id, y_audit_label, multi_y_scores, y_multi_true = self.process_data()
+            logger.info(f"gt_label_dic: {gt_label_dic}")
+            # Evaluate white samples
+            self.evaluate_white_samples(y_id, y_audit_label, multi_y_scores, y_multi_true)
+            
+            # Evaluate black samples
+            # self.evaluate_black_samples(y_id, y_audit_label, multi_y_scores, y_multi_true)
+            
+        except Exception as e:
+            logger.error(f"Evaluation failed: {str(e)}", exc_info=True)
+            raise
+
+    @staticmethod
+    def _find_best_f1_threshold(precision: np.ndarray, recall: np.ndarray, thresholds: np.ndarray, label: int) -> Tuple[float, float, float, float]:
+        """Find threshold that achieves best F1 score and return corresponding metrics."""
+        eps = 1e-12
+        f1_scores = 2 * (precision * recall) / (precision + recall + eps)
+        best_idx = np.argmax(f1_scores)
+        best_threshold = thresholds[best_idx]
+        best_precision = precision[best_idx]
+        best_recall = recall[best_idx]
+        best_f1 = f1_scores[best_idx]
+        logger.info(f"Label_{label}_Best_Threshold: {best_threshold:.6f}")
+        logger.info(f"Label_{label}_Best_Precision: {best_precision:.4f}")
+        logger.info(f"Label_{label}_Best_Recall: {best_recall:.4f}")
+        logger.info(f"Label_{label}_Best_F1: {best_f1:.4f}")
+        return best_threshold, best_precision, best_recall, best_f1
+
+    @staticmethod
+    def _output_metrics_at_precision_intervals(precision: np.ndarray, recall: np.ndarray, thresholds: np.ndarray, label: int) -> None:
+        """Output metrics at regular precision intervals of 0.05."""
+        eps = 1e-12
+        f1_scores = 2 * (precision * recall) / (precision + recall + eps)
+        
+        # Create precision intervals from 0.05 to 1.0
+        target_precisions = np.array([0.500, 0.750, 0.900, 0.950, 0.990, 0.995, 0.999, 1.000])
+        
+        logger.info(f"\nMetrics at precision intervals for Label_{label}:")
+        logger.info("Precision\tRecall\tF1\tThreshold")
+        logger.info("-" * 50)
+        
+        # Ensure we have valid arrays
+        if len(precision) == 0 or len(recall) == 0 or len(thresholds) == 0:
+            logger.warning("Empty precision, recall, or thresholds array")
+            return
+            
+        # Find valid indices where precision is achievable
+        valid_indices = []
+        for target_precision in target_precisions:
+            # Find the closest precision value
+            idx = np.abs(precision - target_precision).argmin()
+            if idx < len(precision) and idx < len(recall) and idx < len(f1_scores) and idx < len(thresholds):
+                valid_indices.append((target_precision, idx))
+        
+        # Output metrics for valid indices
+        for target_precision, idx in valid_indices:
+            logger.info(f"{precision[idx]:.4f}\t{recall[idx]:.4f}\t{f1_scores[idx]:.4f}\t{thresholds[idx]:.4f}")
+
+    def evaluate_white_samples(self, y_id: List[str], y_audit_label: List[str], 
+                             multi_y_scores: List[List[float]], y_multi_true: List[int]) -> None:
+        """Evaluate white sample performance and overall reduction effect."""
+        label = 0
+        # y_true_idx = [int(j != label) for j in y_multi_true]
+        # y_scores_idx = [1.0 - j[label] for j in multi_y_scores]
+
+        y_true_idx = [int(j == label) for j in y_multi_true]
+        y_scores_idx = [j[label] for j in multi_y_scores]
+        
+        precision, recall, thresholds = precision_recall_curve(y_true_idx, y_scores_idx, drop_intermediate=True)
+        
+        # Output metrics at regular precision intervals
+        self._output_metrics_at_precision_intervals(precision, recall, thresholds, label)
+        
+        self._find_best_f1_threshold(precision, recall, thresholds, label)
+        # threshold = self._find_threshold_for_recall(recall, thresholds, self.args.recall)
+        # threshold = self._find_threshold_for_precision(precision, thresholds, self.args.precision)
+        # threshold = 0.970
+        threshold = 0.500
+        
+        confusion = self.get_confusion_matrix(threshold, y_true_idx, y_scores_idx)
+        metrics = self.calculate_metrics(confusion)
+        
+        # Calculate overall reduction effect
+        total_samples = confusion.sum().item()
+        reduced_samples = confusion[0, :].sum().item()  # Samples classified as negative
+        # Write header
+        logger.info("Label_{label}_Results:\n")
+        logger.info(f"Label_{label}_Threshold: {threshold:.6f}")
+        logger.info(f"Label_{label}_Total_Samples: {total_samples}")
+        logger.info(f"Label_{label}_Reduced_Samples: {reduced_samples}")
+        logger.info(f"Label_{label}_Reduction_Rate: {1.0 - metrics.hit_rate:.4f}")
+        logger.info(f"Label_{label}_Precision: {metrics.precision:.4f}")
+        logger.info(f"Label_{label}_Recall: {metrics.recall:.4f}")
+        logger.info(f"Label_{label}_F1: {metrics.f1_score:.4f}")
+        logger.info(f"Label_{label}_Confusion_Matrix:\n{metrics.confusion_matrix}")
+
+        # Write detailed sample information to file
+        suffix="_".join(self.args.mejson.split('/')[-1].split('_')[1:-1])
+        output_file = os.path.join(os.path.dirname(self.args.mejson), f'{suffix}_zhibai_samples_{label}.txt')
+        with open(output_file, 'w') as f:
+            
+            # Write detailed sample information
+            f.write("ID\tScore\tTrue_Label\tPredicted_Label\tcelue\tUrl\tAudit_Label\tComment\tBackground\n") 
+            # Sort by score in descending order without modifying original arrays
+            sorted_data = sorted(zip(y_id, y_scores_idx, y_true_idx, y_audit_label), 
+                              key=lambda x: x[1], reverse=True)
+            
+            for id, score, true_label, audit_label in sorted_data:
+                data = self.datalist[id]
+                pred_label = 1 if score >= threshold else 0
+                if pred_label == true_label:
+                    continue
+                
+                # Parse comment and background info
+                celue = data["celue"] if "celue" in data else ""
+                conv = data["conversations"][0]["value"].split("\n")
+                comment = conv[-4].split("评论:")[1] if len(conv) > 2 else ""
+                background = conv[-2].split("背景信息:")[1] if len(conv) > 1 else ""
+                url = ""
+                if len(data["image"]) > 0:
+                    url = os.path.join("http://9.223.241.48/apdcephfs_qy3/share_301069248/data/video/pindaopinlun3/dapan", data["image"][0])
+                
+                f.write(f"{id}\t{score:.6f}\t{true_label}\t{pred_label}\t{celue}\t{url}\t{audit_label}\t{comment}\t{background}\n")
+        
+        # Log summary to console
+        logger.info(f"\nWhite sample evaluation results written to {output_file}")
+
+    def evaluate_black_samples(self, y_id: List[str], y_audit_label: List[str], 
+                             multi_y_scores: List[List[float]], y_multi_true: List[int]) -> None:
+        """Evaluate black sample performance for each label."""
+        # Process each black sample class
+        num_label = len(multi_y_scores[0])
+        
+        for label in range(1, num_label):
+            y_true_idx = [int(j == label) for j in y_multi_true]
+            y_scores_idx = [j[label] for j in multi_y_scores]
+            if sum(y_true_idx) == 0:
+                continue
+            
+            precision, recall, thresholds = precision_recall_curve(y_true_idx, y_scores_idx, drop_intermediate=True)
+            self._find_best_f1_threshold(precision, recall, thresholds, label)
+            threshold = self._find_threshold_for_precision(precision, thresholds, self.args.precision)
+            
+            confusion = self.get_confusion_matrix(threshold, y_true_idx, y_scores_idx)
+            metrics = self.calculate_metrics(confusion)
+            
+            # Calculate per-label metrics
+            total_label_samples = confusion[:, 1].sum().item()
+            detected_label_samples = confusion[1, 1].item()
+        
+            # Log summary to console
+            logger.info(f"Label_{label}_Results:")
+            logger.info(f"Label_{label}_Threshold: {threshold:.6f}")
+            logger.info(f"Label_{label}_Total_Samples: {total_label_samples}")
+            logger.info(f"Label_{label}_Detected_Samples: {detected_label_samples}")
+            logger.info(f"Label_{label}_Precision: {metrics.precision:.4f}")
+            logger.info(f"Label_{label}_Recall: {metrics.recall:.4f}")
+            logger.info(f"Label_{label}_F1: {metrics.f1_score:.4f}")
+            logger.info(f"Label_{label}_Confusion_Matrix:\n{metrics.confusion_matrix}")
+
+            # Write detailed sample information to file for this label
+            suffix="_".join(self.args.mejson.split('/')[-1].split('_')[1:-1])
+            output_file = os.path.join(os.path.dirname(self.args.mejson), f'{suffix}_black_samples_{label}.txt')
+            with open(output_file, 'w') as f:
+                # Write detailed sample information
+                f.write("ID\tScore\tTrue_Label\tPredicted_Label\tUrl\tAudit_Label\tComment\tBackground\n")
+                
+                # Sort by score in descending order without modifying original arrays
+                sorted_data = sorted(zip(y_id, y_scores_idx, y_true_idx, y_audit_label), 
+                                  key=lambda x: x[1], reverse=True)
+                
+                for id, score, true_label, audit_label in sorted_data:
+                    data = self.datalist[id]
+                    pred_label = 1 if score >= threshold else 0
+                        
+                    # Parse comment and background info
+                    conv = data["conversations"][0]["value"].split("\n")
+                    comment = conv[-4].split("评论:")[1] if len(conv) > 2 else ""
+                    background = conv[-2].split("背景信息:")[1] if len(conv) > 1 else ""
+                    url = ""
+                    if len(data["image"]) > 0:
+                        url = os.path.join("http://9.223.241.48/apdcephfs_qy3/share_301069248/data/video/pindaopinlun3/dapan", data["image"][0])
+                
+                    f.write(f"{id}\t{score:.6f}\t{true_label}\t{pred_label}\t{url}\t{audit_label}\t{comment}\t{background}\n")
+            
+            logger.info(f"Label {label} evaluation results written to {output_file}")
+
+    @staticmethod
+    def _find_threshold_for_recall(recall: np.ndarray, thresholds: np.ndarray, target_recall: float) -> float:
+        """Find threshold that achieves target recall."""
+        idx = np.argmin(np.abs(recall - target_recall))
+        if idx == len(thresholds):
+            idx = len(thresholds) - 1
+        return thresholds[idx]
+
+    @staticmethod
+    def _find_threshold_for_precision(precision: np.ndarray, thresholds: np.ndarray, target_precision: float) -> float:
+        """Find threshold that achieves target precision."""
+        idx = np.argmin(np.abs(precision - target_precision))
+        if idx == len(thresholds):
+            idx = len(thresholds) - 1
+        return thresholds[idx]
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Evaluate model predictions for VQA task')
+    parser.add_argument('--ckpt', type=str, default="", help='Checkpoint directory')
+    parser.add_argument('--mejson', type=str, required=True, help='Input JSON file path')
+    parser.add_argument('--split', type=str, required=True, help='Test split file path')
+    parser.add_argument('--recall', type=float, default=0.990, help='Recall threshold')
+    parser.add_argument('--precision', type=float, default=0.995, help='Precision threshold')
+    return parser.parse_args()
+
+if __name__ == '__main__':
+    try:
+        args = parse_args()
+        evaluator = VQAEvaluator(args)
+        evaluator.evaluate()
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}", exc_info=True)
+        raise

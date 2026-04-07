@@ -11,7 +11,7 @@ from tqdm import tqdm
 import numpy as np
 import os
 import math
-#import pdb
+# import pdb
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -21,9 +21,6 @@ def split_list(lst, n):
 
 def get_chunk(lst, n, k):
     chunks = split_list(lst, n)
-    if k >= len(chunks):
-        print(f"Warning: chunk_idx {k} >= num actual chunks {len(chunks)} (data_size={len(lst)}, num_chunks={n}). Returning empty list.")
-        return []
     return chunks[k]
 
 
@@ -35,9 +32,9 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, index):
         data = self.questions[index]
-        if "instruction" in data and "input" in data:
-            prompt = "\n".join([data["instruction"], data["input"]])
-        elif "input" in data:
+        #if "instruction" in data and "input" in data:
+        #    prompt = "\n".join([data["instruction"], data["input"]])
+        if "input" in data:
             prompt = data["input"]
         elif "messages" in data:
             prompt = data['messages'][0]['content'].replace("<image>", "")
@@ -84,23 +81,17 @@ def main(
         
 ):
     
+    print(model_name, dev_path, num_chunks, chunk_idx, answers_file, max_seq_len, model_fp16, max_new_tokens)
     questions = []
-    # 读取json格式的文件
-    with open(dev_path, "r", encoding='utf-8') as f:
-        if dev_path.endswith("json"):
-            questions = json.load(f)
-        elif dev_path.endswith("jsonl"):
-            lines = f.readlines()
-            for line in lines:
-                questions.append(json.loads(line.strip()))
-        else:
-            print("invalid data")
-            quit()
+    with open(dev_path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            questions.append(json.loads(line.strip()))
     print("data_size: %d" % len(questions))
     questions = get_chunk(questions, num_chunks, chunk_idx)
     answers_file = os.path.expanduser(answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
-    ans_file = open(answers_file, "w", encoding='utf-8')
+    ans_file = open(answers_file, "w")
 
     # We recommend enabling flash_attention_2 for better acceleration and memory saving, especially in multi-image and video scenarios.
     print("model name:", model_name)
@@ -125,16 +116,13 @@ def main(
     indx=0
     for inputs, line in tqdm(zip(data_loader, questions), total=len(questions)):
         # pdb.set_trace()
-        idx = line.get("id", line.get("sample_id", None))
+        idx = line["id"]
         inputs = inputs[0].to(device='cuda', non_blocking=True)
         # Inference: Generation of the output
         # pdb.set_trace()
         outputs = model.generate(**inputs,
                                  min_length=0, num_beams=1, num_return_sequences=1,
                                  max_new_tokens=max_new_tokens,
-                                 # 重复惩罚核心参数（关键）
-                                 repetition_penalty=1.2,        # 重复惩罚因子，1.2是常用合理值
-                                 no_repeat_ngram_size=2,        # 禁止重复2个连续字/词
                                  return_dict_in_generate=True,
                                  use_cache=False,
                                  do_sample=False,
@@ -202,7 +190,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_seq_len",
         type=int,
-        default=10240,
+        default=830,
         help="",
     )
     parser.add_argument(
@@ -213,7 +201,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_new_token",
         type=int,
-        default=1,
+        default=5,
         help="max tokens for generation",
     )
     args = parser.parse_args()
