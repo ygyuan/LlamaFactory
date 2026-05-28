@@ -1,4 +1,20 @@
 {
+  "train_pdpl_v1_juhe_qwen3vl": {
+    "file_name": "pindaopinlun/train_pdpl_v1_juhe_qwen3vl.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "images": "image"
+    }
+  },
+  "test_pdpl_v1_juhe_qwen3vl": {
+    "file_name": "pindaopinlun/test_pdpl_v1_juhe_qwen3vl.jsonl",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "images": "image"
+    }
+  },
   "identity": {
     "file_name": "identity.json"
   },
