@@ -80,7 +80,15 @@ def apply_liger_kernel(
     elif model_type == "qwen3_next":
         from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next as apply_liger_kernel
     elif model_type == "qwen3_5":
-        from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5 as apply_liger_kernel
+        try:
+            from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5 as apply_liger_kernel
+        except ImportError:
+            logger.warning_rank0(
+                "Installed liger-kernel does not provide `apply_liger_kernel_to_qwen3_5`. "
+                "Skip applying liger kernel for qwen3_5. "
+                "Please install a liger-kernel build that supports qwen3_5 if you need it."
+            )
+            return
     elif model_type == "gpt_oss":
         try:
             from liger_kernel.transformers import apply_liger_kernel_to_gpt_oss as apply_liger_kernel
