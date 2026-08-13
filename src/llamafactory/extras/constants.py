@@ -73,6 +73,23 @@ MCA_SUPPORTED_MODELS = {
     "qwen3_5_moe",
 }
 
+# Text LLM model_types supported by the Megatron Bridge PT/SFT path (gpt_step).
+# Multimodal / audio / omni architectures are excluded in v0.
+MEGATRON_BRIDGE_SUPPORTED_MODELS = {
+    "deepseek_v3",
+    "deepseek_v4",
+    "llama",
+    "mistral",
+    "qwen2",
+    "qwen3",
+    "qwen3_5",
+    "qwen3_5_moe",
+    "qwen3_5_moe_text",
+    "qwen3_5_text",
+    "qwen3_moe",
+    "qwen3_next",
+}
+
 METHODS = ["full", "freeze", "lora", "oft"]
 
 MOD_SUPPORTED_MODELS = {"bloom", "falcon", "gemma", "llama", "mistral", "mixtral", "phi", "starcoder2"}
@@ -886,6 +903,9 @@ register_model_group(
         "Gemma-4-E4B-Thinking": {
             DownloadSource.DEFAULT: "google/gemma-4-E4B-it",
         },
+        "Gemma-4-12B-Thinking": {
+            DownloadSource.DEFAULT: "google/gemma-4-12B-it",
+        },
     },
     template="gemma4n",
     multimodal=True,
@@ -1242,6 +1262,28 @@ register_model_group(
         },
     },
     template="hunyuan",
+)
+
+
+register_model_group(
+    models={
+        "Hy-MT2-1.8B-Instruct": {
+            DownloadSource.DEFAULT: "tencent/Hy-MT2-1.8B",
+            DownloadSource.MODELSCOPE: "Tencent-Hunyuan/Hy-MT2-1.8B",
+        },
+    },
+    template="hy_dense_1_8b",
+)
+
+
+register_model_group(
+    models={
+        "Hy-MT2-7B-Instruct": {
+            DownloadSource.DEFAULT: "tencent/Hy-MT2-7B",
+            DownloadSource.MODELSCOPE: "Tencent-Hunyuan/Hy-MT2-7B",
+        },
+    },
+    template="hy_dense_7b",
 )
 
 
@@ -1914,6 +1956,17 @@ register_model_group(
 
 register_model_group(
     models={
+        "MiniCPM5-1B-Chat": {
+            DownloadSource.DEFAULT: "openbmb/MiniCPM5-1B",
+            DownloadSource.MODELSCOPE: "OpenBMB/MiniCPM5-1B",
+        },
+    },
+    template="empty",
+)
+
+
+register_model_group(
+    models={
         "MiniCPM-o-2.6": {
             DownloadSource.DEFAULT: "openbmb/MiniCPM-o-2_6",
             DownloadSource.MODELSCOPE: "OpenBMB/MiniCPM-o-2_6",
@@ -2142,6 +2195,17 @@ register_model_group(
         },
     },
     template="moonlight",
+)
+
+
+register_model_group(
+    models={
+        "MOSS-VL-Instruct-0708": {
+            DownloadSource.DEFAULT: "OpenMOSS-Team/MOSS-VL-Instruct-0708",
+        },
+    },
+    template="moss_vl",
+    multimodal=True,
 )
 
 
@@ -3330,6 +3394,19 @@ register_model_group(
         "VibeThinker-1.5B": {
             DownloadSource.DEFAULT: "WeiboAI/VibeThinker-1.5B",
             DownloadSource.MODELSCOPE: "WeiboAI/VibeThinker-1.5B",
+        },
+    },
+    template="qwen3",
+)
+
+
+# Qwen-AgentWorld: language world model based on Qwen3.5-35B-A3B (MoE).
+# Reference: https://github.com/QwenLM/Qwen-AgentWorld
+register_model_group(
+    models={
+        "Qwen-AgentWorld-35B-A3B-Thinking": {
+            DownloadSource.DEFAULT: "Qwen/Qwen-AgentWorld-35B-A3B",
+            DownloadSource.MODELSCOPE: "Qwen/Qwen-AgentWorld-35B-A3B",
         },
     },
     template="qwen3",

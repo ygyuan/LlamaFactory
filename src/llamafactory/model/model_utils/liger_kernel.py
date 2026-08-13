@@ -16,6 +16,7 @@ import inspect
 from typing import TYPE_CHECKING
 
 from ...extras import logging
+from ...extras.misc import get_device_name
 
 
 if TYPE_CHECKING:
@@ -89,6 +90,16 @@ def apply_liger_kernel(
                 "Please install a liger-kernel build that supports qwen3_5 if you need it."
             )
             return
+    elif model_type == "qwen3_5_moe":
+        try:
+            from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe as apply_liger_kernel
+        except ImportError:
+            logger.warning_rank0(
+                "Installed liger-kernel does not provide `apply_liger_kernel_to_qwen3_5_moe`. "
+                "Skip applying liger kernel for qwen3_5_moe. "
+                "Please install a liger-kernel build that supports qwen3_5_moe if you need it."
+            )
+            return
     elif model_type == "gpt_oss":
         try:
             from liger_kernel.transformers import apply_liger_kernel_to_gpt_oss as apply_liger_kernel
@@ -104,6 +115,13 @@ def apply_liger_kernel(
         kwargs = {"fused_linear_cross_entropy": False, "cross_entropy": True}
     else:
         kwargs = {}
+
+    if get_device_name() == "npu":
+        import torch
+
+        if "Ascend910" not in torch.npu.get_device_name(0):
+            kwargs["swiglu"] = False
+            kwargs["fused_linear_cross_entropy"] = False
 
     apply_liger_kernel(**kwargs)
     logger.info_rank0("Liger kernel has been applied to the model.")
